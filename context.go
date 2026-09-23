@@ -76,6 +76,11 @@ type Context struct {
 
 	methodsAllowed   []methodTyp // allowed methods in case of a 405
 	methodNotAllowed bool
+
+	// trace, when non-nil, records routing tree decision steps. It is only
+	// set by Mux.ExplainRoute on its own private context, and is never set
+	// on the pooled contexts used by ServeHTTP.
+	trace *[]string
 }
 
 // Reset a routing context to its initial state.

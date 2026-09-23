@@ -119,6 +119,17 @@ type node struct {
 
 	// first byte of the prefix
 	label byte
+
+	// regs logs every InsertRoute call made on the root node of a tree,
+	// including registrations later overwritten, for route shadow analysis.
+	// It is only populated on the root node.
+	regs []routeRegistration
+}
+
+// routeRegistration records a single InsertRoute call on a tree.
+type routeRegistration struct {
+	methods methodTyp
+	pattern string
 }
 
 // endpoints is a mapping of http method constants to handlers
@@ -148,6 +159,9 @@ func (s endpoints) Value(method methodTyp) *endpoint {
 func (n *node) InsertRoute(method methodTyp, pattern string, handler http.Handler) *node {
 	var parent *node
 	search := pattern
+
+	// Record the registration on the root node for shadow analysis.
+	n.regs = append(n.regs, routeRegistration{methods: method, pattern: pattern})
 
 	for {
 		// Handle key exhaustion
@@ -428,9 +442,15 @@ func (n *node) findRoute(rctx *Context, method methodTyp, path string) *node {
 		switch ntyp {
 		case ntStatic:
 			xn = nds.findEdge(label)
-			if xn == nil || !strings.HasPrefix(xsearch, xn.prefix) {
+			if xn == nil {
+				rctx.tracef("static: no edge for path %q", xsearch)
 				continue
 			}
+			if !strings.HasPrefix(xsearch, xn.prefix) {
+				rctx.tracef("static: prefix %q does not match path %q", xn.prefix, xsearch)
+				continue
+			}
+			rctx.tracef("static: matched prefix %q", xn.prefix)
 			xsearch = xsearch[len(xn.prefix):]
 
 		case ntParam, ntRegexp:
@@ -448,6 +468,7 @@ func (n *node) findRoute(rctx *Context, method methodTyp, path string) *node {
 					if xn.tail == '/' {
 						p = len(xsearch)
 					} else {
+						rctx.tracef("param: delimiter %q not found in path %q", string(xn.tail), xsearch)
 						continue
 					}
 				} else if ntyp == ntRegexp && p == 0 {
@@ -456,6 +477,7 @@ func (n *node) findRoute(rctx *Context, method methodTyp, path string) *node {
 
 				if ntyp == ntRegexp && xn.rex != nil {
 					if !xn.rex.MatchString(xsearch[:p]) {
+						rctx.tracef("regexp: %q does not match %q", xn.rex.String(), xsearch[:p])
 						continue
 					}
 				} else if strings.IndexByte(xsearch[:p], '/') != -1 {
@@ -465,6 +487,7 @@ func (n *node) findRoute(rctx *Context, method methodTyp, path string) *node {
 
 				prevlen := len(rctx.routeParams.Values)
 				rctx.routeParams.Values = append(rctx.routeParams.Values, xsearch[:p])
+				rctx.tracef("param: captured %q", xsearch[:p])
 				xsearch = xsearch[p:]
 
 				if len(xsearch) == 0 {
@@ -487,6 +510,7 @@ func (n *node) findRoute(rctx *Context, method methodTyp, path string) *node {
 						// flag that the routing context found a route, but not a corresponding
 						// supported method
 						rctx.methodNotAllowed = true
+						rctx.tracef("method: no handler for this method at the matched node")
 					}
 				}
 
@@ -505,6 +529,7 @@ func (n *node) findRoute(rctx *Context, method methodTyp, path string) *node {
 
 		default:
 			// catch-all nodes
+			rctx.tracef("wildcard: captured %q", search)
 			rctx.routeParams.Values = append(rctx.routeParams.Values, search)
 			xn = nds[0]
 			xsearch = ""
@@ -523,20 +548,21 @@ func (n *node) findRoute(rctx *Context, method methodTyp, path string) *node {
 					return xn
 				}
 
-				for endpoints := range xn.endpoints {
-					if endpoints == mALL || endpoints == mSTUB {
-						continue
+					for endpoints := range xn.endpoints {
+						if endpoints == mALL || endpoints == mSTUB {
+							continue
+						}
+						if !slices.Contains(rctx.methodsAllowed, endpoints) {
+							rctx.methodsAllowed = append(rctx.methodsAllowed, endpoints)
+						}
 					}
-					if !slices.Contains(rctx.methodsAllowed, endpoints) {
-						rctx.methodsAllowed = append(rctx.methodsAllowed, endpoints)
-					}
-				}
 
-				// flag that the routing context found a route, but not a corresponding
-				// supported method
-				rctx.methodNotAllowed = true
+					// flag that the routing context found a route, but not a corresponding
+					// supported method
+					rctx.methodNotAllowed = true
+					rctx.tracef("method: no handler for this method at the matched node")
+				}
 			}
-		}
 
 		// recursively find the next node..
 		fin := xn.findRoute(rctx, method, xsearch)
