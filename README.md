@@ -506,6 +506,45 @@ and..
 * Source: https://github.com/golang/go/tree/master/src/context
 
 
+## Versioned routing
+
+`chi.VersionedMux` is an opt-in container that publishes a fully-built `*chi.Mux`
+atomically while older versions keep serving their in-flight requests. Plain
+`*chi.Mux` usage is completely unaffected.
+
+```go
+vm := chi.NewVersionedMux(buildMuxV1())
+go http.ListenAndServe(":3333", vm)
+
+// Later: build a complete new mux, then publish it atomically.
+retired := vm.Swap(buildMuxV2())
+
+// Wait until the old version's active requests have drained. Cancelling
+// the context only stops the wait; it never terminates those requests.
+_ = retired.Wait(ctx)
+```
+
+Lifecycle of a version:
+
+1. **Published** - the container's current version; acquires new requests.
+   Every request is pinned to exactly one version when it enters, including
+   its middlewares and nested `Mount`ed sub-routers.
+2. **Retired** - replaced by `Swap`; acquires no new requests but keeps
+   serving the ones it already pinned. Publishing never mutates old trees.
+3. **Drained** - the last pinned request finished; `Version.Wait` unblocks
+   and the old tree can be garbage collected.
+
+A version reference is released exactly when a request's `ServeHTTP` returns:
+after the response stream ends, after a panic unwinds, or after the client
+disconnects and the handler gives up. If a handler hijacks the connection
+(`http.Hijacker`), the drain cutoff is the moment that handler returns -
+the container does not track hijacked connections, so it never retains a
+`Mux` forever on their behalf.
+
+See `_examples/versioned` for a runnable demo that prints versions, request
+results and drain status.
+
+
 ## Benchmarks
 
 The benchmark suite: https://github.com/pkieltyka/go-http-routing-benchmark
