@@ -13,6 +13,7 @@ chi examples
 * [todos-resource](https://github.com/go-chi/chi/blob/master/_examples/todos-resource/main.go) - Struct routers/handlers, an example of another code layout style
 * [versions](https://github.com/go-chi/chi/blob/master/_examples/versions/main.go) - Demo of `chi/render` subpkg
 * [pathvalue](https://github.com/go-chi/chi/blob/master/_examples/pathvalue/main.go) - Demonstrates `PathValue` usage for retrieving URL parameters
+* [param-binding](https://github.com/go-chi/chi/blob/master/_examples/param-binding/main.go) - Bind and validate URL parameters once with a reusable middleware
 
 
 ## Usage
