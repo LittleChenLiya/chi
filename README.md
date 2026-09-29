@@ -493,6 +493,31 @@ Please see https://github.com/go-chi for additional packages.
 --------------------------------------------------------------------------------------------------------------------
 
 
+## Versioned routers
+
+`chi.VersionedMux` is an atomic, versioned container for a `*chi.Mux`, useful for
+hot-swapping a whole routing tree at runtime (config reloads, blue/green deploys):
+
+1. Build a complete new `*chi.Mux` off to the side - routes, mounts and middlewares -
+   exactly as you would for a plain chi server. Once published, treat it as immutable.
+2. Publish it with `vx.Swap(next)`. Swap is atomic and never modifies the previous
+   tree; it retires the previous `*chi.Version` and returns it.
+3. Each request entering `vx.ServeHTTP` pins the version that is current at that
+   instant, so nested `Mount`'d sub-routers and middlewares all see one consistent
+   tree for the whole request.
+4. A retired version stays alive until its last active request finishes. Use
+   `version.Wait(ctx)` / `version.Drained()` to await full drainage; cancelling the
+   wait context only stops the wait, it never interrupts in-flight requests.
+
+The version pin is released exactly when the top-level `ServeHTTP` returns - on
+normal completion, on panics unwinding the handler chain (install
+`middleware.Recoverer` in each published mux), and after client disconnects once the
+handler returns. For hijacked connections the drain cutoff is the same: the pin ends
+when the handler returns, so a hijacked connection never retains the old mux.
+
+See `_examples/versioned` for a runnable demo.
+
+
 ## context?
 
 `context` is a tiny pkg that provides simple interface to signal context across call stacks
