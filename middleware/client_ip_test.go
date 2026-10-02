@@ -735,3 +735,218 @@ func runChain(t *testing.T, mws []func(http.Handler) http.Handler, buildReq func
 	r.ServeHTTP(httptest.NewRecorder(), req)
 	return got
 }
+
+// TestClientIPFromXFFTrustedPeer pins the contract of the peer-authenticated
+// XFF middleware: X-Forwarded-For is consulted ONLY when the direct TCP peer
+// is inside a trusted CIDR, the chain is stripped right-to-left of trusted
+// hops, and every degenerate case falls back to the direct peer.
+func TestClientIPFromXFFTrustedPeer(t *testing.T) {
+	tt := []struct {
+		name       string
+		cidrs      []string
+		remoteAddr string
+		xff        []string
+		out        string
+	}{
+		// Acceptance case: trusted peer 10.0.0.2, chain "203.0.113.7, 10.0.0.1"
+		// — 10.0.0.1 is a trusted hop and is stripped; 203.0.113.7 is the
+		// first untrusted entry from the right and is selected.
+		{
+			name:       "trusted_peer_strips_trusted_hops",
+			cidrs:      []string{"10.0.0.0/8"},
+			remoteAddr: "10.0.0.2:8080",
+			xff:        []string{"203.0.113.7, 10.0.0.1"},
+			out:        "203.0.113.7",
+		},
+		// Acceptance case: the SAME header from an untrusted direct peer is
+		// ignored entirely; the client IP is the peer itself.
+		{
+			name:       "untrusted_peer_ignores_header",
+			cidrs:      []string{"10.0.0.0/8"},
+			remoteAddr: "203.0.113.99:1234",
+			xff:        []string{"203.0.113.7, 10.0.0.1"},
+			out:        "203.0.113.99",
+		},
+		{
+			name:       "untrusted_peer_no_header",
+			cidrs:      []string{"10.0.0.0/8"},
+			remoteAddr: "198.51.100.9:443",
+			xff:        nil,
+			out:        "198.51.100.9",
+		},
+		// Fallbacks to the direct peer (documented, deterministic).
+		{
+			name:       "bad_entry_falls_back_to_peer",
+			cidrs:      []string{"10.0.0.0/8"},
+			remoteAddr: "10.0.0.2:8080",
+			xff:        []string{"203.0.113.7, garbage, 10.0.0.1"},
+			out:        "10.0.0.2",
+		},
+		{
+			name:       "all_entries_trusted_falls_back_to_peer",
+			cidrs:      []string{"10.0.0.0/8"},
+			remoteAddr: "10.0.0.2:8080",
+			xff:        []string{"10.0.0.9, 10.0.0.1"},
+			out:        "10.0.0.2",
+		},
+		{
+			name:       "trusted_peer_no_header_falls_back_to_peer",
+			cidrs:      []string{"10.0.0.0/8"},
+			remoteAddr: "10.0.0.2:8080",
+			xff:        nil,
+			out:        "10.0.0.2",
+		},
+		{
+			name:       "unparseable_remoteaddr_sets_nothing",
+			cidrs:      []string{"10.0.0.0/8"},
+			remoteAddr: "not-an-ip",
+			xff:        []string{"203.0.113.7"},
+			out:        "",
+		},
+		// IPv6: the peer arrives as "[v6]:port"; the port is stripped before
+		// the CIDR check. Trusted v6 hops are stripped the same way as v4.
+		{
+			name:       "ipv6_peer_with_port_and_v6_chain",
+			cidrs:      []string{"fd00::/8"},
+			remoteAddr: "[fd00::2]:443",
+			xff:        []string{"2001:db8::7, fd00::1"},
+			out:        "2001:db8::7",
+		},
+		{
+			name:       "ipv6_untrusted_peer_ignores_header",
+			cidrs:      []string{"fd00::/8"},
+			remoteAddr: "[2001:db8::99]:443",
+			xff:        []string{"2001:db8::7, fd00::1"},
+			out:        "2001:db8::99",
+		},
+		// Pinned port rule: XFF entries must be bare IPs. A port-bearing
+		// entry (v4 or bracketed v6) does not parse, so the whole header is
+		// discarded and the result falls back to the direct peer.
+		{
+			name:       "xff_entry_with_v4_port_falls_back_to_peer",
+			cidrs:      []string{"10.0.0.0/8"},
+			remoteAddr: "10.0.0.2:8080",
+			xff:        []string{"203.0.113.7:1234, 10.0.0.1"},
+			out:        "10.0.0.2",
+		},
+		{
+			name:       "xff_entry_with_bracketed_v6_port_falls_back_to_peer",
+			cidrs:      []string{"10.0.0.0/8"},
+			remoteAddr: "10.0.0.2:8080",
+			xff:        []string{"[2001:db8::7]:443, 10.0.0.1"},
+			out:        "10.0.0.2",
+		},
+		{
+			name:       "bare_ipv6_entry_accepted",
+			cidrs:      []string{"10.0.0.0/8"},
+			remoteAddr: "10.0.0.2:8080",
+			xff:        []string{"2001:db8::7, 10.0.0.1"},
+			out:        "2001:db8::7",
+		},
+		// Pinned duplicate-header rule: multiple XFF lines merge in wire
+		// order (RFC 2616) before the right-to-left walk.
+		{
+			name:       "duplicate_headers_merged_in_order",
+			cidrs:      []string{"10.0.0.0/8"},
+			remoteAddr: "10.0.0.2:8080",
+			xff:        []string{"203.0.113.7", "10.0.0.5, 10.0.0.1"},
+			out:        "203.0.113.7",
+		},
+		{
+			name:       "duplicate_headers_attacker_first_line_ignored",
+			cidrs:      []string{"10.0.0.0/8"},
+			remoteAddr: "10.0.0.2:8080",
+			xff:        []string{"127.0.0.1", "203.0.113.7, 10.0.0.1"},
+			out:        "203.0.113.7",
+		},
+		// Normalization: v4-mapped IPv6 folds to v4 before the trust check,
+		// so it cannot alias a trusted v4 address past the CIDR list.
+		{
+			name:       "v4_mapped_entry_matches_v4_trusted_cidr",
+			cidrs:      []string{"10.0.0.0/8"},
+			remoteAddr: "10.0.0.2:8080",
+			xff:        []string{"203.0.113.7, ::ffff:10.0.0.1"},
+			out:        "203.0.113.7",
+		},
+		{
+			name:       "v4_mapped_peer_matches_v4_trusted_cidr",
+			cidrs:      []string{"10.0.0.0/8"},
+			remoteAddr: "[::ffff:10.0.0.2]:8080",
+			xff:        []string{"203.0.113.7, 10.0.0.1"},
+			out:        "203.0.113.7",
+		},
+	}
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			got := run(t, ClientIPFromXFFTrustedPeer(tc.cidrs...), func(r *http.Request) {
+				r.RemoteAddr = tc.remoteAddr
+				for _, v := range tc.xff {
+					r.Header.Add("X-Forwarded-For", v)
+				}
+			})
+			if got != tc.out {
+				t.Errorf("want %q, got %q", tc.out, got)
+			}
+		})
+	}
+}
+
+// Bad CIDRs are rejected at registration time (panic), not per-request.
+func TestClientIPFromXFFTrustedPeer_PanicsOnBadCIDR(t *testing.T) {
+	for _, bad := range []string{"not-a-cidr", "10.0.0.0/33", "10.0.0.1"} {
+		t.Run(bad, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("expected panic on invalid CIDR %q", bad)
+				}
+			}()
+			ClientIPFromXFFTrustedPeer(bad)
+		})
+	}
+}
+
+// The middleware must never mutate r.RemoteAddr, and the resolved client IP
+// lives in its own context entry — composing with the deprecated RealIP
+// middleware (which DOES mutate RemoteAddr) must not disturb either side.
+func TestClientIPFromXFFTrustedPeer_ComposesWithLegacyRealIP(t *testing.T) {
+	const peer = "10.0.0.2:8080"
+
+	var gotClientIP, gotRemoteAddr string
+	r := chi.NewRouter()
+	r.Use(ClientIPFromXFFTrustedPeer("10.0.0.0/8"))
+	r.Use(RealIP) //nolint:staticcheck // deliberately testing interop with the deprecated middleware.
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		gotClientIP = GetClientIP(r.Context())
+		gotRemoteAddr = r.RemoteAddr
+	})
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = peer
+	req.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
+	r.ServeHTTP(httptest.NewRecorder(), req)
+
+	// The context entry is independent of RealIP's RemoteAddr mutation.
+	if gotClientIP != "203.0.113.7" {
+		t.Errorf("GetClientIP: want 203.0.113.7, got %q", gotClientIP)
+	}
+	// RealIP ran after us and did its (deprecated) thing; our value was
+	// already safely in the context.
+	if gotRemoteAddr != "203.0.113.7" {
+		t.Errorf("RemoteAddr after RealIP: want 203.0.113.7, got %q", gotRemoteAddr)
+	}
+
+	// Without RealIP in the chain, RemoteAddr is untouched.
+	var gotRemoteAddr2 string
+	r2 := chi.NewRouter()
+	r2.Use(ClientIPFromXFFTrustedPeer("10.0.0.0/8"))
+	r2.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		gotRemoteAddr2 = r.RemoteAddr
+	})
+	req2 := httptest.NewRequest("GET", "/", nil)
+	req2.RemoteAddr = peer
+	req2.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
+	r2.ServeHTTP(httptest.NewRecorder(), req2)
+	if gotRemoteAddr2 != peer {
+		t.Errorf("RemoteAddr was mutated: want %q, got %q", peer, gotRemoteAddr2)
+	}
+}

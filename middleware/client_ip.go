@@ -173,6 +173,98 @@ func ClientIPFromXFFTrustedProxies(numTrustedProxies int) func(http.Handler) htt
 	}
 }
 
+// ClientIPFromXFFTrustedPeer stores the client IP resolved from
+// X-Forwarded-For, but ONLY when the direct TCP peer (r.RemoteAddr) is
+// itself inside one of the given trusted CIDRs. Read it with [GetClientIP].
+//
+// Unlike [ClientIPFromXFF], which trusts the header no matter who is
+// connecting, this middleware first authenticates the immediate peer:
+//
+//   - Peer NOT in any trusted CIDR: X-Forwarded-For is ignored entirely;
+//     the client IP is the peer itself. A random internet client can never
+//     spoof the result by sending the header directly to this server.
+//   - Peer in a trusted CIDR: the merged XFF chain is walked RIGHT-TO-LEFT,
+//     stripping entries that fall inside a trusted CIDR; the first
+//     untrusted entry is the client.
+//
+// Deterministic fallback rules (all fall back to the direct peer, never to
+// an empty result, as long as the peer address itself parses):
+//
+//   - an XFF entry does not parse as an IP (garbage, or a host:port form —
+//     ports are NOT accepted in XFF entries, see below);
+//   - every entry in the chain is trusted (nothing untrusted to select);
+//   - the header is absent or carries no entries.
+//
+// If r.RemoteAddr itself does not parse as an IP, no client IP is set.
+//
+// Header shape rules, pinned so behaviour does not depend on the proxy
+// vendor's quirks:
+//
+//   - Duplicate headers: multiple X-Forwarded-For header lines are merged
+//     in wire order (RFC 2616) into one chain before the right-to-left
+//     walk, so an attacker cannot pick which header line the security
+//     logic sees by sending a duplicate.
+//   - Ports: XFF entries must be bare IPs. "1.2.3.4:5678" and
+//     "[2001:db8::1]:5678" do NOT parse; per the fallback rules above the
+//     whole header is then discarded and the direct peer is used. (The
+//     peer's own address in r.RemoteAddr IS expected in host:port form —
+//     "[2001:db8::10]:443" for IPv6 — and its port is stripped.)
+//   - v4-mapped IPv6 (::ffff:a.b.c.d) folds to plain v4 and IPv6 zones are
+//     stripped before the trust check and storage, so neither notation can
+//     alias a trusted IP past the CIDR list.
+//
+// No DNS lookups are performed; CIDRs and addresses are parsed with
+// [net/netip] only. r.RemoteAddr is never mutated.
+//
+// Panics at registration if any CIDR is invalid — configure once at
+// startup and fail fast, not per-request.
+func ClientIPFromXFFTrustedPeer(trustedCIDRs ...string) func(http.Handler) http.Handler {
+	prefixes := make([]netip.Prefix, len(trustedCIDRs))
+	for i, c := range trustedCIDRs {
+		prefixes[i] = netip.MustParsePrefix(c)
+	}
+	return func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			peer, ok := parseRemoteAddr(r.RemoteAddr)
+			if ok {
+				client := peer
+				if inAnyPrefix(peer, prefixes) {
+					if ip, ok := clientFromXFF(r.Header[xForwardedForHeader], prefixes); ok {
+						client = ip
+					}
+				}
+				r = r.WithContext(context.WithValue(r.Context(), clientIPCtxKey, client))
+			}
+			h.ServeHTTP(w, r)
+		})
+	}
+}
+
+// clientFromXFF walks the merged X-Forwarded-For chain right-to-left and
+// returns the first entry not inside any of the trusted prefixes. ok is
+// false — signalling the caller to fall back to the direct peer — when an
+// entry fails to parse or when every entry is trusted.
+func clientFromXFF(headers []string, prefixes []netip.Prefix) (netip.Addr, bool) {
+	var found netip.Addr
+	walkOK := true
+	walkXFF(headers, func(v string) bool {
+		ip, ok := parseHeaderAddr(v)
+		if !ok {
+			walkOK = false
+			return true
+		}
+		if inAnyPrefix(ip, prefixes) {
+			return false // trusted hop; keep walking left
+		}
+		found = ip
+		return true
+	})
+	if !walkOK || !found.IsValid() {
+		return netip.Addr{}, false
+	}
+	return found, true
+}
+
 // ClientIPFromRemoteAddr stores the client IP read from the TCP RemoteAddr
 // of the incoming request — the IP address of whoever opened the connection
 // to this server. Read it with [GetClientIP].
@@ -187,15 +279,28 @@ func ClientIPFromXFFTrustedProxies(numTrustedProxies int) func(http.Handler) htt
 // IPv6 zones are preserved (link-local connections may legitimately have one).
 func ClientIPFromRemoteAddr(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			host = r.RemoteAddr // RemoteAddr may already be a bare IP (e.g. in tests).
-		}
-		if ip, err := netip.ParseAddr(host); err == nil {
-			r = r.WithContext(context.WithValue(r.Context(), clientIPCtxKey, ip.Unmap()))
+		if ip, ok := parseRemoteAddr(r.RemoteAddr); ok {
+			r = r.WithContext(context.WithValue(r.Context(), clientIPCtxKey, ip))
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+// parseRemoteAddr parses the direct peer's address out of r.RemoteAddr,
+// which normally arrives in host:port form ("1.2.3.4:5678" or
+// "[2001:db8::1]:443"); a bare IP is also accepted (e.g. in tests).
+// v4-mapped IPv6 folds to plain v4; an IPv6 zone (legitimate on link-local
+// connections) is preserved. Parsing only — never a DNS lookup.
+func parseRemoteAddr(remoteAddr string) (netip.Addr, bool) {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr // RemoteAddr may already be a bare IP (e.g. in tests).
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return ip.Unmap(), true
 }
 
 // GetClientIP returns the client IP as a string, as set by one of the

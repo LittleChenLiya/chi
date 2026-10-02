@@ -23,6 +23,11 @@ import (
 //     proxies whose IP ranges you can enumerate (your VPC CIDR, Cloudflare's
 //     published IP list, etc.).
 //
+//   - [middleware.ClientIPFromXFFTrustedPeer] — like ClientIPFromXFF, but
+//     additionally requires the direct TCP peer itself to be inside a
+//     trusted CIDR before X-Forwarded-For is consulted at all, and falls
+//     back to the peer on any degenerate header.
+//
 //   - [middleware.ClientIPFromXFFTrustedProxies] — you sit behind a known,
 //     fixed number of reverse proxies whose IPs are dynamic (autoscaling
 //     pools, ephemeral containers).
@@ -105,4 +110,38 @@ func Example_clientIPFromXFFTrustedProxies() {
 	// 109.81.118.93
 	// 109.81.118.93
 	// 109.81.118.93
+}
+
+// Example_clientIPFromXFFTrustedPeer resolves the client IP locally with
+// httptest and prints it. X-Forwarded-For is only honoured because the
+// direct peer (RemoteAddr) is inside the trusted CIDR 10.0.0.0/8; the
+// trusted hop 10.0.0.1 is stripped right-to-left and the first untrusted
+// entry, 203.0.113.7, is the client. From an untrusted peer the same
+// header is ignored and the peer itself is reported.
+func Example_clientIPFromXFFTrustedPeer() {
+	r := chi.NewRouter()
+	r.Use(middleware.ClientIPFromXFFTrustedPeer("10.0.0.0/8"))
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, middleware.GetClientIP(r.Context()))
+	})
+
+	// Trusted direct peer: header honoured.
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.2:8080"
+	req.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	fmt.Print(w.Body.String())
+
+	// Untrusted direct peer: same header ignored, peer reported.
+	req = httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "203.0.113.99:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	fmt.Print(w.Body.String())
+
+	// Output:
+	// 203.0.113.7
+	// 203.0.113.99
 }
