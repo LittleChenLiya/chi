@@ -357,6 +357,7 @@ with `net/http` can be used with chi's mux.
 | [RealIP]               | Deprecated — vulnerable to IP spoofing; use [ClientIPFromXFF] or another ClientIPFrom\* middleware |
 | [Recoverer]            | Gracefully absorb panics and prints the stack trace                     |
 | [RequestID]            | Injects a request ID into the context of each request                   |
+| [RequestLabels]        | Maintains an independent per-request label container with snapshot reads |
 | [RedirectSlashes]      | Redirect slashes on routing paths                                       |
 | [RouteHeaders]         | Route handling for request headers                                      |
 | [SetHeader]            | Short-hand middleware to set a response header key/value                |
@@ -391,6 +392,7 @@ with `net/http` can be used with chi's mux.
 [RedirectSlashes]: https://pkg.go.dev/github.com/go-chi/chi/middleware#RedirectSlashes
 [RequestLogger]: https://pkg.go.dev/github.com/go-chi/chi/middleware#RequestLogger
 [RequestID]: https://pkg.go.dev/github.com/go-chi/chi/middleware#RequestID
+[RequestLabels]: https://pkg.go.dev/github.com/go-chi/chi/middleware#RequestLabels
 [RouteHeaders]: https://pkg.go.dev/github.com/go-chi/chi/middleware#RouteHeaders
 [SetHeader]: https://pkg.go.dev/github.com/go-chi/chi/middleware#SetHeader
 [StripSlashes]: https://pkg.go.dev/github.com/go-chi/chi/middleware#StripSlashes
