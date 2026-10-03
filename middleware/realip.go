@@ -22,9 +22,9 @@ var xRealIP = http.CanonicalHeaderKey("X-Real-IP")
 // whether or not your infrastructure actually sets them. See
 // GHSA-3fxj-6jh8-hvhx, GHSA-rjr7-jggh-pgcp, GHSA-9g5q-2w5x-hmxf.
 //
-// Use [ClientIPFromHeader], [ClientIPFromXFF], [ClientIPFromXFFTrustedProxies]
-// or [ClientIPFromRemoteAddr] and read the IP with [GetClientIP] instead.
-// These never mutate r.RemoteAddr.
+// Use [ClientIPFromHeader], [ClientIPFromXFF], [ClientIPFromTrustedProxies],
+// [ClientIPFromXFFTrustedProxies] or [ClientIPFromRemoteAddr] and read the
+// IP with [GetClientIP] instead. These never mutate r.RemoteAddr.
 func RealIP(h http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		if rip := realIP(r); rip != "" {

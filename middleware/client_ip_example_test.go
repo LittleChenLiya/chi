@@ -23,6 +23,10 @@ import (
 //     proxies whose IP ranges you can enumerate (your VPC CIDR, Cloudflare's
 //     published IP list, etc.).
 //
+//   - [middleware.ClientIPFromTrustedProxies] — as above, but X-Forwarded-For
+//     is only honored when the direct connection peer is itself a trusted
+//     proxy; an untrusted peer cannot spoof the header.
+//
 //   - [middleware.ClientIPFromXFFTrustedProxies] — you sit behind a known,
 //     fixed number of reverse proxies whose IPs are dynamic (autoscaling
 //     pools, ephemeral containers).
