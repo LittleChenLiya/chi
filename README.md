@@ -255,6 +255,54 @@ can be fetched at runtime by calling `chi.URLParam(r, "userID")` for named param
 and `chi.URLParam(r, "*")` for a wildcard parameter.
 
 
+### Read-only route summaries
+
+For API checking and documentation tooling, `chi.SummarizeRoutes` builds a read-only
+method summary straight from the registered routes — it issues no HTTP requests and never
+runs a handler or middleware, and it does not change any route or middleware.
+
+The traversal follows `Routes`/`Walk` and `Mount` semantics:
+
+* mount prefixes and named parameter segments are preserved (a `/v1` mount keeps
+  `GET /items/{id}` as `GET /v1/items/{id}`);
+* methods registered on the same full path template are merged into one entry, but
+  templates that differ only in a parameter name (e.g. `/items/{id}` vs `/items/{name}`)
+  stay separate;
+* a `Mount` backed by a plain `http.Handler` that is not a chi router (e.g.
+  `http.FileServer`) cannot be inspected, so it is listed under `UnexpandedMounts` instead
+  of having methods fabricated;
+* only explicitly registered methods are reported, so a GET-only route never lists HEAD.
+  `RouteEndpoint.ExplicitHEAD()` distinguishes a real `Head()` registration from runtime
+  HEAD-on-GET behaviour (such as the `middleware.GetHead` middleware), which does not
+  register anything.
+
+```go
+r := chi.NewRouter()
+r.Route("/v1", func(r chi.Router) {
+    r.Get("/items/{id}", getItem)
+    r.Post("/items", createItem)
+})
+r.Get("/healthz", healthz)
+r.Head("/healthz", healthz)
+r.Mount("/files", http.FileServer(http.Dir("./static")))
+
+summary, err := chi.SummarizeRoutes(r) // no requests, handlers never execute
+
+// Machine-readable: summary is JSON-marshalable (RouteSummary{Endpoints, UnexpandedMounts}).
+// Human-readable short report:
+fmt.Print(summary.Report())
+// Route method summary
+// GET     /healthz
+// HEAD    /healthz
+// POST    /v1/items
+// GET     /v1/items/{id}	# HEAD~GET (no explicit HEAD registration)
+// MOUNT   /files/* (unexpanded: mounted handler is not a chi router)
+```
+
+See the [route-summary example](https://github.com/go-chi/chi/blob/master/_examples/route-summary/main.go)
+for a runnable demo.
+
+
 ### Middleware handlers
 
 chi's middlewares are just stdlib net/http middleware handlers. There is nothing special

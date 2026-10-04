@@ -1,0 +1,9 @@
+Route method summary
+GET     /healthz
+HEAD    /healthz
+GET     /ping	# HEAD~GET (no explicit HEAD registration)
+GET     /v1/admin/users/{userID}	# HEAD~GET (no explicit HEAD registration)
+POST    /v1/items
+GET     /v1/items/{id}	# HEAD~GET (no explicit HEAD registration)
+GET     /v2/items/{name}	# HEAD~GET (no explicit HEAD registration)
+MOUNT   /files/* (unexpanded: mounted handler is not a chi router)
