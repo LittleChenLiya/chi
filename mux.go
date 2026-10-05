@@ -42,6 +42,14 @@ type Mux struct {
 	// The middleware stack
 	middlewares []func(http.Handler) http.Handler
 
+	// namedMiddlewares records named middleware registrations in Use order,
+	// along with the position of their handler in middlewares.
+	namedMiddlewares []namedMiddlewareEntry
+
+	// inlineChildren tracks inline muxs derived via With/Group so Audit can
+	// validate their effective chains.
+	inlineChildren []*Mux
+
 	// Controls the behaviour of middleware chain generation when a mux
 	// is registered as an inline group inside another mux.
 	inline bool
@@ -102,6 +110,34 @@ func (mx *Mux) Use(middlewares ...func(http.Handler) http.Handler) {
 		panic("chi: all middlewares must be defined before routes on a mux")
 	}
 	mx.middlewares = append(mx.middlewares, middlewares...)
+}
+
+// UseNamed appends one or more named middlewares to the Mux middleware stack.
+//
+// Named middlewares are registered under an explicit name so that their
+// position in the chain can be validated at startup with Audit. A named
+// middleware may declare ordering constraints with Before and After; the
+// constraints are checked against the real registered order and never
+// enforced by reordering.
+//
+// The middleware stack for any Mux will execute before searching for a matching
+// route to a specific handler, which provides opportunity to respond early,
+// change the course of the request execution, or set request-scoped values for
+// the next http.Handler.
+func (mx *Mux) UseNamed(named ...*NamedMiddleware) {
+	if mx.handler != nil {
+		panic("chi: all middlewares must be defined before routes on a mux")
+	}
+	for _, n := range named {
+		if n == nil || n.handler == nil {
+			panic("chi: attempting to UseNamed() a nil middleware")
+		}
+		mx.namedMiddlewares = append(mx.namedMiddlewares, namedMiddlewareEntry{
+			named: n,
+			pos:   len(mx.middlewares),
+		})
+		mx.middlewares = append(mx.middlewares, n.handler)
+	}
 }
 
 // Handle adds the route `pattern` that matches any http method to
@@ -248,16 +284,23 @@ func (mx *Mux) With(middlewares ...func(http.Handler) http.Handler) Router {
 
 	// Copy middlewares from parent inline muxs
 	var mws Middlewares
+	var namedEntries []namedMiddlewareEntry
 	if mx.inline {
 		mws = make(Middlewares, len(mx.middlewares))
 		copy(mws, mx.middlewares)
+		namedEntries = make([]namedMiddlewareEntry, len(mx.namedMiddlewares))
+		copy(namedEntries, mx.namedMiddlewares)
 	}
 	mws = append(mws, middlewares...)
 
 	im := &Mux{
 		pool: mx.pool, inline: true, parent: mx, tree: mx.tree, middlewares: mws,
+		namedMiddlewares: namedEntries,
 		notFoundHandler: mx.notFoundHandler, methodNotAllowedHandler: mx.methodNotAllowedHandler,
 	}
+
+	// Track the inline mux so Audit can validate its effective chain.
+	mx.inlineChildren = append(mx.inlineChildren, im)
 
 	return im
 }

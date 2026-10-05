@@ -72,6 +72,19 @@ type Router interface {
 	// Use appends one or more middlewares onto the Router stack.
 	Use(middlewares ...func(http.Handler) http.Handler)
 
+	// UseNamed appends one or more named middlewares onto the Router stack.
+	// Named middlewares declare Before/After ordering constraints that are
+	// validated at startup with Audit.
+	UseNamed(named ...*NamedMiddleware)
+
+	// Audit validates the ordering constraints of all named middlewares
+	// registered on the Router and its mounted subrouters. It checks only the
+	// real registered order, never reorders the chain and never invokes
+	// middleware handlers. It returns a *MiddlewareAuditError describing
+	// order violations and missing dependencies separately, or nil if all
+	// constraints are satisfied.
+	Audit() error
+
 	// With adds inline middlewares for an endpoint handler.
 	With(middlewares ...func(http.Handler) http.Handler) Router
 
