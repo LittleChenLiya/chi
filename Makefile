@@ -13,6 +13,10 @@ test:
 test-router:
 	go test -race -v .
 
+.PHONY: test-urlbuilder
+test-urlbuilder:
+	go test -race -v -run 'TestURLBuilder|ExampleURLBuilder' .
+
 .PHONY: test-middleware
 test-middleware:
 	go test -race -v ./middleware
