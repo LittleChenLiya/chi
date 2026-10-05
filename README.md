@@ -326,6 +326,41 @@ func MyRequestHandler(w http.ResponseWriter, r *http.Request) {
   w.Write([]byte(fmt.Sprintf("hi %v, %v", userID, key)))
 }
 ```
+### Building URLs for registered routes
+
+`Mux.BuildURL` is the inverse of routing: it builds a URL path from a route
+pattern registered on the mux and a set of parameter values.
+
+```go
+r := chi.NewRouter()
+r.Get("/files/{name}", handler)
+r.Get("/users/{id:[0-9]+}", handler)
+r.Get("/static/*", handler)
+
+// Single-segment params are percent-encoded as one segment: an embedded "/"
+// becomes "%2F" and is never treated as a new path segment.
+path, err := r.BuildURL("/files/{name}", map[string]string{"name": "a/b"})
+// path == "/files/a%2Fb"
+
+// Regexp constraints declared by the pattern are enforced on the raw value.
+path, err = r.BuildURL("/users/{id:[0-9]+}", map[string]string{"id": "abc"})
+// err != nil (errors.Is(err, chi.ErrURLParamConstraint))
+
+// The trailing wildcard "*" accepts a multi-segment tail; each segment is
+// encoded individually.
+path, err = r.BuildURL("/static/*", map[string]string{"*": "css/site.css"})
+// path == "/static/css/site.css"
+```
+
+Every declared parameter must be supplied (`chi.ErrURLMissingParam`) and every
+supplied value must be consumed (`chi.ErrURLExtraParam`). Before returning,
+the built path is matched against the mux's own routing tree to confirm it
+resolves back to the same pattern — this check never executes any handler or
+middleware and performs no network I/O. Run the tests with:
+
+```
+go test -run 'TestBuildURL|ExampleMux_BuildURL' .
+```
 
 
 ## Middlewares
